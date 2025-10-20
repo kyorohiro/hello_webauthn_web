@@ -9,18 +9,51 @@ import { isoUint8Array } from "@simplewebauthn/server/helpers";
 import { fileURLToPath } from "node:url";
 import "dotenv/config";
 import path from "node:path";
+import cors from 'cors';               // ← 追加
+import helmet from 'helmet'; 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 3000;
 const rpID = process.env.RP_ID || "localhost";
-const origin = process.env.ORIGIN || "http://localhost:3000";
+//const origin = process.env.ORIGIN || "http://localhost:3000";
+const expectedOrigins = [
+   process.env.ORIGIN || 'http://localhost:3000',
+   process.env.FLUTTER_ORIGIN || 'http://localhost:5173', // 必要なら
+];
 const publicDir = path.join(__dirname, "public");
+const ALLOW_ORIGINS = (process.env.ALLOW_ORIGINS ?? 'https://example.com,https://stg.example.com')
+  .split(',').map(s => s.trim()).filter(Boolean);
+const LOCALHOST_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
+const corsOptions: cors.CorsOptions = {
+  origin(origin, cb) {
+    if (!origin) return cb(null, true); // 同一オリジンやcurl等は許可
+    if (ALLOW_ORIGINS.includes(origin) || LOCALHOST_RE.test(origin)) return cb(null, true);
+    return cb(new Error(`CORS blocked: ${origin}`));
+  },
+  credentials: false,
+  methods: ['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization'],
+  maxAge: 86400,
+};;
 
 const db = new Map<string, any>(); // 超簡易: ユーザー/クレデンシャル保存
 
 const app = express();
 app.use(express.json());
+//app.use(helmet({
+//  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+//}));
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      "script-src": ["'self'", "'unsafe-inline'"], // ← DEVだけ
+    },
+  },
+}));
+
+app.use(cors(corsOptions));
 
 // 静的配信（/assets 等）
 app.use(express.static(publicDir, {
@@ -59,7 +92,7 @@ app.post("/api/webauthn/registration/verify", async (req, res) => {
   const vr = await verifyRegistrationResponse({
     response: attResp,
     expectedChallenge,
-    expectedOrigin: origin,
+    expectedOrigin: expectedOrigins,
     expectedRPID: rpID,
   });
   if (!vr.verified || !vr.registrationInfo) {
@@ -106,7 +139,7 @@ app.post("/api/webauthn/authentication/verify", async (req, res) => {
   const vr = await verifyAuthenticationResponse({
     response: assertionResp,
     expectedChallenge,
-    expectedOrigin: origin,
+    expectedOrigin: expectedOrigins,
     expectedRPID: rpID,
     credential: {
       id: cred.id, // DBのcredentialID（Base64URL）

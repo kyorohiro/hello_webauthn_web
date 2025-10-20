@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="origin-trial" content="">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebAuthn Demo (Static)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }
+    button { padding: 8px 14px; margin-right: 8px; }
+    pre { background: #f5f5f7; padding: 12px; border-radius: 8px; overflow: auto; }
+    .row { margin: 12px 0; }
+  </style>
+</head>
+<body>
+  <h1>WebAuthn Demo (Static Page)</h1>
+
+  <div class="row">
+    <label>User ID: <input id="uid" value="u123" /></label>
+    <label style="margin-left:8px;">Username: <input id="uname" value="kiyo" /></label>
+  </div>
+
+  <div class="row">
+    <button id="registerBtn">Register Passkey</button>
+    <button id="loginBtn">Login</button>
+  </div>
+
+  <div class="row">
+    <h3>Log</h3>
+    <pre id="log"></pre>
+  </div>
+
+<script>
+const apiBase = ""; // 同一オリジンで動かすので空でOK（相対パス）。別ポートなら "http://localhost:3000"
+
+const logEl = document.getElementById("log");
+const append = (msg) => { logEl.textContent = `${msg}\n${logEl.textContent}`; };
+
+const b64urlToBuf = (b64url) => {
+  const pad = "=".repeat((4 - (b64url.length % 4)) % 4);
+  const b64 = (b64url + pad).replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+};
+const bufToB64url = (buf) => {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/,"");
+};
+
+async function registerPasskey() {
+  try {
+    const userId = document.getElementById("uid").value || "u123";
+    const username = document.getElementById("uname").value || "kiyo";
+
+    const optsRes = await fetch(`${apiBase}/api/webauthn/registration/options`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ userId, username, displayName: username })
+    });
+    const pubKeyOpts = await optsRes.json();
+
+    // server からの Base64URL を ArrayBuffer に変換
+    pubKeyOpts.challenge = b64urlToBuf(pubKeyOpts.challenge);
+    pubKeyOpts.user.id = b64urlToBuf(pubKeyOpts.user.id);
+    if (Array.isArray(pubKeyOpts.excludeCredentials)) {
+      pubKeyOpts.excludeCredentials = pubKeyOpts.excludeCredentials.map(c => ({
+        ...c, id: b64urlToBuf(c.id),
+      }));
+    }
+
+    const cred = await navigator.credentials.create({ publicKey: pubKeyOpts });
+    const attResp = {
+      id: cred.id,
+      rawId: bufToB64url(cred.rawId),
+      type: cred.type,
+      authenticatorAttachment: cred.authenticatorAttachment ?? null,
+      response: {
+        attestationObject: bufToB64url(cred.response.attestationObject),
+        clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+      },
+      clientExtensionResults: cred.getClientExtensionResults?.() ?? {},
+    };
+
+    const vr = await fetch(`${apiBase}/api/webauthn/registration/verify`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ userId, attResp })
+    });
+    if (!vr.ok) throw new Error(await vr.text());
+    append("✅ Passkey registered");
+  } catch (e) {
+    append("❌ " + e);
+  }
+}
+
+async function loginPasskey() {
+  try {
+    const userId = document.getElementById("uid").value || "u123";
+
+    const optsRes = await fetch(`${apiBase}/api/webauthn/authentication/options`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ userId })
+    });
+    const pubKeyOpts = await optsRes.json();
+
+    pubKeyOpts.challenge = b64urlToBuf(pubKeyOpts.challenge);
+    if (Array.isArray(pubKeyOpts.allowCredentials)) {
+      pubKeyOpts.allowCredentials = pubKeyOpts.allowCredentials.map(c => ({
+        ...c, id: b64urlToBuf(c.id),
+      }));
+    }
+
+    const cred = await navigator.credentials.get({ publicKey: pubKeyOpts });
+    const assertionResp = {
+      id: cred.id,
+      rawId: bufToB64url(cred.rawId),
+      type: cred.type,
+      response: {
+        authenticatorData: bufToB64url(cred.response.authenticatorData),
+        clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+        signature: bufToB64url(cred.response.signature),
+        userHandle: cred.response.userHandle ? bufToB64url(cred.response.userHandle) : null,
+      },
+      clientExtensionResults: cred.getClientExtensionResults?.() ?? {},
+    };
+
+    const vr = await fetch(`${apiBase}/api/webauthn/authentication/verify`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ userId, assertionResp })
+    });
+    if (!vr.ok) throw new Error(await vr.text());
+    append("✅ Login OK");
+  } catch (e) {
+    append("❌ " + e);
+  }
+}
+
+document.getElementById("registerBtn").addEventListener("click", registerPasskey);
+document.getElementById("loginBtn").addEventListener("click", loginPasskey);
+</script>
+</body>
+</html>
